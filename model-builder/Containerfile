@@ -1,0 +1,70 @@
+# model-builder: the tools that build and render the spacecraft models, such as
+# github.com/spacecraft-models/starship and github.com/spacecraft-models/dragonfly. OpenSCAD makes
+# the previews and STLs, Blender the realistic renders, and Python with Pillow and trimesh runs the
+# scripts around them. build.sh builds it with buildah, and README.md says how to use it.
+#
+# Build settings (--build-arg NAME=VALUE):
+#   BLENDER_VERSION  The Blender release to install, 4.0 or later
+#   BLENDER_MIRROR   Where to download it from: blender.org, or one of its mirrors
+#                    (https://www.blender.org/download/mirrors/), given as the folder that holds
+#                    the Blender5.2 and other release folders
+
+FROM docker.io/library/ubuntu:26.04
+
+LABEL org.opencontainers.image.title="model-builder" \
+      org.opencontainers.image.description="OpenSCAD, Blender and Python, to build and render the spacecraft models" \
+      org.opencontainers.image.source="https://github.com/spacecraft-models/tools"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8
+
+# OpenSCAD 2021.01, Ubuntu 26.04's package and the version the models are written for. It draws
+# PNGs with OpenGL, which needs a display, so it gets a virtual one (Xvfb) drawn by Mesa in
+# software; bin/openscad starts it when there is no display. Then the scripts' Python packages,
+# the fonts the summary sheets and the models' text() use, and what checkouts and downloads need.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      openscad \
+      xvfb xauth libgl1-mesa-dri libglx-mesa0 \
+      python3 python3-pil python3-numpy python3-scipy python3-trimesh python3-shapely \
+      python3-networkx python3-rtree \
+      fontconfig fonts-dejavu-core fonts-liberation \
+      ca-certificates curl xz-utils git git-lfs tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Blender: Blender's own build, the one its snap installs, checked against the checksums
+# blender.org publishes. Ubuntu 26.04's blender package won't do: it is built without
+# OpenImageDenoise, which scripts/render_blender.py in starship uses. The settings come only now,
+# so changing them rebuilds only this step and the ones after it.
+ARG BLENDER_VERSION=5.2.3
+ARG BLENDER_MIRROR=https://download.blender.org/release
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxkbcommon0 libsm6 libice6 \
+      libgl1 libegl1; \
+    rm -rf /var/lib/apt/lists/*; \
+    file="blender-$BLENDER_VERSION-linux-x64.tar.xz"; \
+    url="$BLENDER_MIRROR/Blender${BLENDER_VERSION%.*}"; \
+    cd /tmp; \
+    curl -fsSL --retry 3 -O "$url/$file"; \
+    curl -fsSL --retry 3 "$url/blender-$BLENDER_VERSION.sha256" | grep " $file\$" | sha256sum -c -; \
+    mkdir /opt/blender; \
+    tar -xJf "$file" -C /opt/blender --strip-components=1; \
+    rm "$file"; \
+    ln -s /opt/blender/blender /usr/local/bin/blender; \
+    if ldd /opt/blender/blender | grep 'not found'; then exit 1; fi; \
+    blender --version | head -n 1
+
+# The display wrapper for OpenSCAD and the image's self-test. Any user can run the image: with
+# podman's --userns=keep-id or docker's --user, the files it writes into a mounted repo belong to
+# whoever ran it, so HOME and Xvfb's socket folder are writable by anyone.
+COPY bin/ /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/openscad /usr/local/bin/model-builder-selftest \
+ && mkdir -m 1777 /home/builder /tmp/.X11-unix \
+ && git config --system --add safe.directory '*'
+
+ENV HOME=/home/builder
+WORKDIR /work
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

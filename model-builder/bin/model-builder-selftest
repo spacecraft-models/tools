@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Checks that the image can do what the model repos' scripts need, and says which versions it has:
+# OpenSCAD drawing a PNG and exporting an STL without a display, the Python packages, the fonts the
+# summary sheets use, and Blender rendering a small scene with Cycles, as the realistic renders do.
+# It prints a line per check, and exits with the number of checks that failed.
+set -uo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+failed=0
+ok() { printf 'ok    %s\n' "$*"; }
+fail() { printf 'FAIL  %s\n' "$*"; failed=$((failed + 1)); }
+
+cat > "$tmp/test.scad" <<'EOF'
+color("tomato") cube(10, center = true);
+translate([14, 0, 0]) color("steelblue") sphere(6, $fn = 48);
+EOF
+
+version="$(openscad --version 2>&1 | awk '/OpenSCAD version/ {print $3}')"
+if [ -n "$version" ]; then ok "OpenSCAD $version"; else fail "openscad --version: $(openscad --version 2>&1 | tail -n 3)"; fi
+
+if openscad -q -o "$tmp/test.png" --imgsize=400,300 --projection=ortho --colorscheme=Tomorrow \
+     --viewall --autocenter --camera=1,-1,1,0,0,0 "$tmp/test.scad" > "$tmp/png.log" 2>&1 &&
+   python3 - "$tmp/test.png" <<'EOF'
+import sys
+from PIL import Image
+# A real drawing has the size asked for and many colours; a failed one is blank or missing
+image = Image.open(sys.argv[1]).convert("RGB")
+sys.exit(0 if image.size == (400, 300) and len(image.getcolors(1 << 18)) > 20 else 1)
+EOF
+then ok "OpenSCAD draws a PNG without a display"
+else fail "OpenSCAD PNG: $(tail -n 5 "$tmp/png.log")"; fi
+
+if openscad -q --export-format binstl -o "$tmp/test.stl" "$tmp/test.scad" > "$tmp/stl.log" 2>&1 &&
+   [ "$(stat -c %s "$tmp/test.stl")" -gt 1000 ]
+then ok "OpenSCAD exports an STL"
+else fail "OpenSCAD STL: $(tail -n 5 "$tmp/stl.log")"; fi
+
+if out="$(python3 -c '
+import sys, PIL, numpy, scipy, shapely, networkx, rtree, trimesh
+print(f"Python {sys.version.split()[0]} with Pillow {PIL.__version__}, numpy {numpy.__version__}, "
+      f"SciPy {scipy.__version__}, trimesh {trimesh.__version__}, Shapely {shapely.__version__}")' 2>&1)"
+then ok "$out"
+else fail "Python packages: $out"; fi
+
+fonts=/usr/share/fonts/truetype/dejavu
+if [ -f "$fonts/DejaVuSans.ttf" ] && [ -f "$fonts/DejaVuSans-Bold.ttf" ]; then ok "DejaVu fonts for the summary sheets"
+else fail "no DejaVu fonts in $fonts"; fi
+
+cat > "$tmp/blender_check.py" <<'EOF'
+import os, sys
+import bpy
+out = sys.argv[sys.argv.index("--") + 1]
+problems, has = [], []
+if bpy.app.version < (4, 0, 0):
+    problems.append("scripts/render_blender.py needs Blender 4.0 or later")
+scene = bpy.context.scene
+scene.render.engine = "CYCLES"
+# Blender 5 no longer lists the denoiser in bpy.app.build_options, so try it, as render_blender.py does
+try:
+    scene.cycles.denoiser = "OPENIMAGEDENOISE"
+    has.append("the denoiser")
+except TypeError:
+    problems.append("no OpenImageDenoise, which scripts/render_blender.py uses")
+if "gltf" in dir(bpy.ops.export_scene):
+    has.append("the glTF exporter")
+else:
+    problems.append("no glTF exporter")
+skies = bpy.utils.system_resource("DATAFILES", path="studiolights/world")
+if skies and os.path.exists(os.path.join(skies, "city.exr")):
+    has.append("the city sky")
+else:
+    problems.append("no city.exr sky for the steel to reflect")
+# The factory scene's cube, rendered as scripts/render_blender.py renders: Cycles on the CPU
+scene.cycles.device = "CPU"
+scene.cycles.samples = 8
+scene.cycles.use_denoising = "the denoiser" in has
+scene.render.resolution_x, scene.render.resolution_y = 160, 120
+scene.render.filepath = out
+bpy.ops.render.render(write_still=True)
+listed = ", ".join(has[:-1]) + " and " + has[-1] if len(has) > 1 else "".join(has)
+print("CHECK", "Blender " + bpy.app.version_string, listed, "; ".join(problems), sep="|")
+EOF
+if blender -b --factory-startup --python-exit-code 1 --python "$tmp/blender_check.py" -- "$tmp/blender.png" > "$tmp/blender.log" 2>&1 &&
+   [ -s "$tmp/blender.png" ] && line="$(grep -m 1 '^CHECK|' "$tmp/blender.log")"
+then
+  IFS='|' read -r _ name has problems <<< "$line"
+  if [ -n "$problems" ]; then fail "$name: $problems"
+  else ok "$name renders with Cycles, with $has"; fi
+else
+  fail "Blender: $(tail -n 8 "$tmp/blender.log")"
+fi
+
+exit "$failed"
