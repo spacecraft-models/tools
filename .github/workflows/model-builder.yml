@@ -1,0 +1,48 @@
+# Builds the model-builder image with model-builder/build.sh (buildah), checks it with its
+# self-test, and on main publishes it to the GitHub Container Registry as
+# ghcr.io/<owner>/model-builder, tagged latest and sha-<commit>. It also rebuilds every Monday,
+# so the image picks up Ubuntu's security updates.
+name: model-builder image
+
+on:
+  push:
+    branches: [main]
+    paths: [model-builder/**, .github/workflows/model-builder.yml]
+  pull_request:
+    paths: [model-builder/**, .github/workflows/model-builder.yml]
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: model-builder-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Name the image
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/model-builder" >> "$GITHUB_ENV"
+
+      - name: Build with buildah
+        run: bash model-builder/build.sh --pull=always
+
+      - name: Self-test
+        run: podman run --rm "$IMAGE:latest" model-builder-selftest
+
+      - name: Publish
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | buildah login --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          buildah tag "$IMAGE:latest" "$IMAGE:sha-${GITHUB_SHA::12}"
+          buildah push "$IMAGE:sha-${GITHUB_SHA::12}"
+          buildah push "$IMAGE:latest"

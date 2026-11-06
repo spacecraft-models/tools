@@ -1,0 +1,47 @@
+# Renders a model repo's models in the model-builder image and keeps the PNGs, STLs, summary sheets
+# and Blender scenes as a workflow artifact called "renders". Copy it into a model repo's
+# .github/workflows/; it works as it is in starship and dragonfly.
+name: Render models
+
+on:
+  push:
+    paths: [model/**, scripts/**, .github/workflows/render-models.yml]
+  pull_request:
+    paths: [model/**, scripts/**, .github/workflows/render-models.yml]
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/spacecraft-models/model-builder:latest
+      # While the image's package is private, the job has to log in to pull it, and the package
+      # has to give this repo read access (Manage Actions access, in the package's settings):
+      # credentials:
+      #   username: ${{ github.actor }}
+      #   password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      # The models scripts/render_blender.sh renders realistically, in repos that have it.
+      # SCALE=50 and SAMPLES=32 make quick drafts; leave them out for full-size renders.
+      BLENDER_MODELS: model/starship.scad
+      SCALE: 50
+      SAMPLES: 32
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Render each model with OpenSCAD
+        run: |
+          for model in model/*.scad; do
+            echo "::group::$model"
+            EDGES=0 bash scripts/render_openscad.sh "$model"
+            echo "::endgroup::"
+          done
+
+      - name: Render realistically with Blender
+        if: hashFiles('scripts/render_blender.sh') != ''
+        run: bash scripts/render_blender.sh $BLENDER_MODELS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renders
+          path: renders/
