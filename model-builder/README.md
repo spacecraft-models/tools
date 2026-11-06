@@ -34,16 +34,28 @@ model-builder/build.sh
 
 That builds `localhost/model-builder:latest`. The first build downloads about 600 MB and takes several minutes; later ones reuse the steps that haven't changed. Options after `build.sh` go to `buildah build`:
 
-- `--build-arg BLENDER_VERSION=5.2.2` installs another Blender release, 4.0 or later, from blender.org, and `--build-arg BLENDER_MIRROR=https://mirrors.ocf.berkeley.edu/blender/release` downloads it from one of [its mirrors](https://www.blender.org/download/mirrors/) instead.
+- `--build-arg BLENDER_VERSION=5.2.2 --build-arg BLENDER_SHA256=<its SHA-256>` installs another Blender release, 4.0 or later. The SHA-256 is the one for the `linux-x64.tar.xz` file in that release's checksum file on blender.org, such as [5.2.3's](https://download.blender.org/release/Blender5.2/blender-5.2.3.sha256). Open it in a browser, since blender.org can turn scripts away.
+- `--build-arg BLENDER_MIRROR=https://ftp.nluug.nl/pub/graphics/blender/release` downloads Blender from another mirror, if the usual one, mirrors.ocf.berkeley.edu, is down. Any mirror will do, as the download has to match the SHA-256.
 - `--pull=always` starts from the newest Ubuntu 26.04 image, with its latest updates.
 
-The image installs Blender's own build rather than Ubuntu's `blender` package, because Ubuntu's (5.0.1) is built without OpenImageDenoise, which `render_blender.py` uses.
+The image installs Blender's own build rather than Ubuntu's `blender` package, because Ubuntu's (5.0.1) is built without OpenImageDenoise, which `render_blender.py` uses. It downloads it from a mirror because download.blender.org can answer scripted downloads with a bot challenge, and checks it against the SHA-256 from blender.org that the Containerfile pins.
 
 `model-builder-selftest` checks a build, printing a line for each tool it tries:
 
 ```bash
 podman run --rm localhost/model-builder model-builder-selftest
 ```
+
+### With docker
+
+The Containerfile builds with docker too. Name it with `-f`, since docker looks for a file called `Dockerfile`:
+
+```bash
+docker build -f model-builder/Containerfile -t model-builder:docker model-builder
+docker run --rm model-builder:docker model-builder-selftest
+```
+
+Give a docker build a tag of its own, like `model-builder:docker` here, and put `ENGINE=docker IMAGE=model-builder:docker` in front of `run.sh` to use it. On a computer with buildah, `build.sh` and `run.sh` keep docker's copy of buildah's image as `localhost/model-builder:latest`, so they would replace a docker build with that tag. A docker build also lacks the build time and commit labels that `build.sh` adds.
 
 ## Running a model's scripts in it
 

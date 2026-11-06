@@ -33,13 +33,13 @@ jobs:
         run: |
           for model in model/*.scad; do
             echo "::group::$model"
-            EDGES=0 scripts/render_openscad.sh "$model"
+            EDGES=0 bash scripts/render_openscad.sh "$model"
             echo "::endgroup::"
           done
 
       - name: Render realistically with Blender
         if: hashFiles('scripts/render_blender.sh') != ''
-        run: scripts/render_blender.sh $BLENDER_MODELS
+        run: bash scripts/render_blender.sh $BLENDER_MODELS
 
       - uses: actions/upload-artifact@v4
         with:
